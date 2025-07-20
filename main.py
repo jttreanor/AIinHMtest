@@ -1,13 +1,12 @@
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Dict, List
+from typing import Dict, List, Optional
 from collections import defaultdict
 import json
 
 app = FastAPI()
 
-# Load recommendations from local JSON file
 with open("uspstf_enriched.json", "r", encoding="utf-8") as f:
     RECOMMENDATIONS = json.load(f)
 
@@ -20,6 +19,7 @@ class PatientProfile(BaseModel):
     pregnant: str
     tobacco_user: str
     sexually_active: str
+    grade: Optional[str] = None
 
 def calculate_bmi(weight, height_ft, height_in):
     try:
@@ -51,13 +51,12 @@ def matches_risk_tag(rec, pregnant, tobacco_user, sexually_active, bmi_category)
         return False
     if risk_tag == "sexually active" and sexually_active != "yes":
         return False
-
     if bmi_tag != "ALL" and bmi_category and bmi_tag != bmi_category:
         return False
 
     return True
 
-def search_recommendations(data, age, sex, pregnant, tobacco_user, sexually_active, bmi_category):
+def search_recommendations(data, age, sex, pregnant, tobacco_user, sexually_active, bmi_category, filter_grade=None):
     matches = []
     for rec in data:
         if not (rec["age_min"] <= age <= rec["age_max"]):
@@ -65,12 +64,15 @@ def search_recommendations(data, age, sex, pregnant, tobacco_user, sexually_acti
         rec_sex = rec.get("sex", "all").lower()
         if sex and rec_sex not in [sex, "all", "men and women"]:
             continue
-        if matches_risk_tag(rec, pregnant, tobacco_user, sexually_active, bmi_category):
-            matches.append(rec)
+        if not matches_risk_tag(rec, pregnant, tobacco_user, sexually_active, bmi_category):
+            continue
+        if filter_grade and rec.get("grade", "").upper() != filter_grade.upper():
+            continue
+        matches.append(rec)
     return matches
 
 @app.post("/get_recommendations")
-def get_recommendations(profile: PatientProfile) -> Dict[str, List[Dict]]:
+def get_recommendations(profile: PatientProfile) -> List[Dict]:
     bmi = calculate_bmi(profile.weight, profile.height_ft, profile.height_in)
     bmi_category = classify_bmi(bmi)
 
@@ -81,20 +83,17 @@ def get_recommendations(profile: PatientProfile) -> Dict[str, List[Dict]]:
         profile.pregnant,
         profile.tobacco_user,
         profile.sexually_active,
-        bmi_category
+        bmi_category,
+        profile.grade
     )
 
-    result = defaultdict(list)
+    result = []
     for rec in matched:
-        grade = rec.get("grade", "UNSPECIFIED").upper()
-        result[grade].append({
+        result.append({
             "id": rec.get("id"),
             "title": rec.get("title"),
             "recommendation": rec.get("recommendation"),
             "frequency": rec.get("frequency_of_service"),
-            "risk_factor": rec.get("risk_factor"),
-            "age_range": f"{rec['age_min']}–{rec['age_max']}",
-            "sex": rec.get("sex")
         })
 
     return result
